@@ -1,6 +1,21 @@
 # Real-Time Deepfake Detection & Diagnostic Reporting System
 
-An advanced, desktop-level real-time deepfake detection application built for Windows (Python 3.11). The system captures live video feeds , tracks faces dynamically, runs a specialized multi-modal 5-channel deep learning classifier, computes temporal suspicion metrics, generates explainable AI (Grad-CAM) heatmaps, and automatically compiles a formal PDF forensic report.
+An advanced, desktop-level real-time deepfake detection application built for Windows (Python 3.11). The system captures live video feeds, tracks faces dynamically, runs a specialized multi-modal 5-channel deep learning classifier, computes temporal suspicion metrics, generates explainable AI (Grad-CAM) heatmaps, and automatically compiles a formal PDF forensic report.
+
+---
+
+## ⚡ Setup & Path Configuration
+
+### 1. Required Packages (`pip install`)
+Run the following command in your terminal to install all required dependencies:
+
+`pip install opencv-python numpy PyWavelets torch torchvision dxcam ultralytics reportlab`
+
+### 2. File Path Configuration
+Before running the script, update the directory paths in the Python script to match where you save the project files on your computer:
+
+* **Line 18 (`REPORT_DIR`):** Controls where generated PDF diagnostic reports are stored (`r"C:\Users\Toshiba\Desktop\LY_PROJECT\Report"`). Change this path to the location where you want your output reports saved.
+* **Line 89 (`checkpoint_path`):** Points to your trained model checkpoint (`r"C:\Users\Toshiba\Desktop\LY_PROJECT\checkpoints\mobilenet_v2_deepfake.pth"`). Change this path to where the `.pth` weight file is stored on your machine.
 
 ---
 
