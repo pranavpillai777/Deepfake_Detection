@@ -92,7 +92,7 @@ class GradCAM:
 
 # Initialize Hardware & Load Deepfake Model safely
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"⚡ Device initialized: {device}")
+print(f" Device initialized: {device}")
 
 model = get_mobilenet_v2_5ch()
 checkpoint_path = r"C:\Users\Toshiba\Desktop\LY_PROJECT\checkpoints\mobilenet_v2_deepfake.pth"
@@ -106,19 +106,25 @@ if os.path.exists(checkpoint_path):
             state_dict = state_dict['model']
             
         model.load_state_dict(state_dict)
-        print(f"✅ Loaded checkpoint successfully from: {checkpoint_path}")
+        print(f" Loaded deepfake checkpoint successfully from: {checkpoint_path}")
     except Exception as e:
-        print(f"❌ Error loading checkpoint: {e}")
+        print(f" Error loading deepfake checkpoint: {e}")
 else:
-    print(f"⚠️ Checkpoint NOT found at: {checkpoint_path}")
+    print(f" Deepfake checkpoint NOT found at: {checkpoint_path}")
 
 model.to(device)
 model.eval()
 grad_cam = GradCAM(model, model.features[-1])
 
-# Initialize Standard YOLOv8 Nano Detector (Auto-downloads official weights)
-print("📥 Initializing YOLOv8 Object Detector (Person Class Target)...")
-face_detector = YOLO("yolov8n.pt")
+# --- LOAD YOLO FACE DETECTOR FROM CHECKPOINTS FOLDER ---
+face_detector_path = r"C:\Users\Toshiba\Desktop\LY_PROJECT\checkpoints\yolov8n-face.pt"
+print(f"📥 Initializing YOLOv8 Face Detector from: {face_detector_path}")
+if os.path.exists(face_detector_path):
+    face_detector = YOLO(face_detector_path)
+    print(" Loaded YOLOv8 Face Detector successfully!")
+else:
+    print(f" YOLOv8 Face Detector NOT found at {face_detector_path}! Falling back to default.")
+    face_detector = YOLO("yolov8n.pt")
 
 # Initialize DXCam instance
 camera = dxcam.create(output_color="BGR")
@@ -155,17 +161,17 @@ def preprocess_5ch(face_bgr):
 # 4. TWO-STAGE BOUNDARY SELECTION
 # -----------------------------------------------------------------------------
 print("\n" + "="*60)
-print("📌 STAGE 1: SWITCH TO YOUR MEDIA WINDOW NOW!")
+print(" STAGE 1: SWITCH TO YOUR MEDIA WINDOW NOW!")
 print("="*60)
 
 COUNTDOWN_SECONDS = 10
 for i in range(COUNTDOWN_SECONDS, 0, -1):
-    print(f"⏳ Freezing screen for boundary capture in: {i} second(s)...", end="\r")
+    print(f" Freezing screen for boundary capture in: {i} second(s)...", end="\r")
     time.sleep(1)
 
-print("\n\n📸 Screen captured via GPU Direct Duplication!")
-print("👉 Click and drag your mouse around the video player.")
-print("👉 Press ENTER to lock the boundary, or 'c' to cancel.\n")
+print("\n\n Screen captured via GPU Direct Duplication!")
+print(" Click and drag your mouse around the video player.")
+print(" Press ENTER to lock the boundary, or 'c' to cancel.\n")
 
 full_screen = camera.grab()
 if full_screen is None:
@@ -186,18 +192,18 @@ roi = cv2.selectROI(window_name, opaque_screen, False)
 cv2.destroyWindow(window_name)
 
 if roi[2] == 0 or roi[3] == 0:
-    print("⚠️ No valid region selected! Defaulting to full screen.")
+    print(" No valid region selected! Defaulting to full screen.")
     target_region = None
 else:
     left, top, w, h = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
     target_region = (left, top, left + w, top + h)
-    print(f"✅ Boundary locked successfully! Region: {target_region}")
+    print(f" Boundary locked successfully! Region: {target_region}")
 
 # -----------------------------------------------------------------------------
-# 5. LIVE YOLO STREAM & INFERENCE LOOP
+# 5. LIVE YOLO STREAM & INFERENCE LOOP (WITH PADDED BOUNDING BOXES)
 # -----------------------------------------------------------------------------
-print("\n🎬 DXCam stream active with YOLO Person/Head Tracking! Play your video now.")
-print("👉 Press CTRL + C in this terminal window when finished to stop & generate PDF report.")
+print("\n DXCam stream active with YOLO Face Tracking! Play your video now.")
+print(" Press CTRL + C in this terminal window when finished to stop & generate PDF report.")
 
 camera.start(region=target_region, target_fps=30, video_mode=True)
 
@@ -217,24 +223,26 @@ try:
         f_height, f_width, _ = frame.shape
         frame[int(f_height * 0.75):f_height, 0:int(f_width * 0.3)] = (0, 0, 0)
         
-        # Run YOLO inference, filtering strictly for class 0 (Person)
-        results = face_detector(frame, verbose=False, conf=0.45, classes=[0])
+        # Run YOLO inference
+        results = face_detector(frame, verbose=False, conf=0.40)
         
         if len(results) > 0 and len(results[0].boxes) > 0:
             box = results[0].boxes[0].xyxy[0].cpu().numpy()
             px, py, px2, py2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
             
+            p_width = px2 - px
             p_height = py2 - py
-            full_x = px
-            full_y = py
-            full_w = px2 - px
-            full_h = int(p_height * 0.45) # Restrict height to top 45% (head zone)
             
-            full_x, full_y = max(0, full_x), max(0, full_y)
-            if full_x + full_w > f_width: full_w = f_width - full_x
-            if full_y + full_h > f_height: full_h = f_height - full_y
+            # Pad bounding box by 18% to capture jawline and seam boundaries
+            pad_x = int(p_width * 0.18)
+            pad_y = int(p_height * 0.18)
             
-            if full_w > 40 and full_h > 40:
+            full_x = max(0, px - pad_x)
+            full_y = max(0, py - pad_y)
+            full_w = min(f_width - full_x, p_width + (2 * pad_x))
+            full_h = min(f_height - full_y, p_height + (2 * pad_y))
+            
+            if full_w > 20 and full_h > 20:
                 face_img = frame[full_y:full_y+full_h, full_x:full_x+full_w]
                 
                 if face_img.size > 0:
@@ -242,15 +250,18 @@ try:
                     
                     gray_face = cv2.cvtColor(face_resized, cv2.COLOR_BGR2GRAY)
                     blur_variance = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+                    box_aspect_ratio = full_h / (full_w + 1e-5)
                     
-                    if blur_variance >= 12.0:
+                    if blur_variance >= 30.0 and (0.7 <= box_aspect_ratio <= 1.6):
                         input_tensor = preprocess_5ch(face_resized)
                         
                         with torch.no_grad():
                             outputs = model(input_tensor)
                             probs = torch.softmax(outputs, dim=1)[0]
                             real_prob = probs[0].item()
-                            fake_prob = probs[1].item()
+                            raw_fake_prob = probs[1].item()
+                            
+                            fake_prob = min(1.0, raw_fake_prob * 1.5)
                         
                         fake_scores.append(fake_prob)
                         
@@ -272,14 +283,14 @@ try:
         elapsed = time.time() - start_time
         fps = frame_count / elapsed if elapsed > 0 else 0
         
-        print(f"\r🎥 YOLO Stream... Elapsed: {elapsed:.1f}s | FPS: {fps:.1f} | Evaluated Faces: {len(fake_scores)}", end="")
+        print(f"\r🎥 YOLO Face Stream... Elapsed: {elapsed:.1f}s | FPS: {fps:.1f} | Evaluated Faces: {len(fake_scores)}", end="")
 
 except KeyboardInterrupt:
-    print("\n\n⏹️ Session stopped via Ctrl+C. Closing CSV log & compiling PDF report...")
+    print("\n\n⏹ Session stopped via Ctrl+C. Closing CSV log & compiling PDF report...")
 finally:
     camera.stop()
     csv_file.close()
-    print(f"📁 CSV Log saved at: {csv_log_path}")
+    print(f" CSV Log saved at: {csv_log_path}")
 
 # -----------------------------------------------------------------------------
 # 6. EQUATION-BASED WEIGHTED AGGREGATION & PDF COMPILATION
@@ -287,10 +298,6 @@ finally:
 total_elapsed = time.time() - start_time
 actual_fps = frame_count / total_elapsed if total_elapsed > 0 else 0
 avg_fake_prob = np.mean(fake_scores) if len(fake_scores) > 0 else 0.0
-
-SPIKE_THRESHOLD = 0.50
-spike_count = sum(1 for score in fake_scores if score > SPIKE_THRESHOLD)
-spike_ratio = spike_count / len(fake_scores) if len(fake_scores) > 0 else 0.0
 
 BURST_WINDOW_SIZE = max(1, int(actual_fps * 1.0))
 max_burst_avg = 0.0
@@ -303,12 +310,10 @@ if len(fake_scores) >= BURST_WINDOW_SIZE:
 else:
     max_burst_avg = avg_fake_prob
 
-# --- WEIGHTED CONFIDENCE INDEX (WCI) EQUATION ---
-# Balances session baseline consistency (50%), burst peak average (30%), and max single-frame spike (20%)
-WCI = (0.50 * avg_fake_prob) + (0.30 * max_burst_avg) + (0.20 * highest_fake_score)
+WCI = (0.20 * avg_fake_prob) + (0.50 * max_burst_avg) + (0.30 * highest_fake_score)
 
-# Final Decision Rule using WCI equation and frequency validation
-if WCI > 0.45 and (spike_ratio > 0.12 or highest_fake_score > 0.85):
+# Robust decision logic resilient to hand occlusions and temporary dropouts
+if WCI > 0.38 or (max_burst_avg > 0.25 and highest_fake_score > 0.80):
     overall_prediction = "SYNTHETIC / DEEPFAKE"
 else:
     overall_prediction = "AUTHENTIC / REAL"
@@ -337,7 +342,7 @@ normal_style = styles['Normal']
 
 elements = []
 
-elements.append(Paragraph(f"Deepfake Detection Diagnostic Report #{report_num} (YOLO Tracked)", title_style))
+elements.append(Paragraph(f"Deepfake Detection Diagnostic Report #{report_num} (YOLO Face Tracked)", title_style))
 elements.append(Paragraph(f"<b>Timestamp:</b> {time.strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
 elements.append(Spacer(1, 10))
 
@@ -373,12 +378,12 @@ elements.append(Spacer(1, 8))
 elements.append(RLImage(temp_gradcam_path, width=380, height=190))
 elements.append(Spacer(1, 12))
 
-elements.append(Paragraph(f"<b>Technical Note:</b> CSV log generated at {os.path.basename(csv_log_path)} using YOLOv8 tracking and WCI equation scoring logic.", normal_style))
+elements.append(Paragraph(f"<b>Technical Note:</b> CSV log generated at {os.path.basename(csv_log_path)} using YOLOv8 face model tracking and WCI equation scoring logic.", normal_style))
 
 doc.build(elements)
 
 if os.path.exists(temp_gradcam_path):
     os.remove(temp_gradcam_path)
 
-print(f"\n🎉 Report compiled and saved successfully!")
-print(f"📄 Location: {pdf_path}")
+print(f"\n Report compiled and saved successfully!")
+print(f" Location: {pdf_path}")
