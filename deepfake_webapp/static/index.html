@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deepfake video check</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* pastel palette */
+    --paper: #f8f4fb;
+    --panel: #ffffff;
+    --ink: #3c3554;
+    --muted: #726791;
+    --line: #e8e1f5;
+
+    --lavender: #cdbdf2;
+    --lavender-deep: #6d4dbf;
+    --mint: #bfe8d4;
+    --mint-ink: #1c6b4d;
+    --coral: #f7c6cd;
+    --coral-ink: #a83a50;
+    --amber: #f6ddb0;
+    --amber-ink: #96631a;
+
+    --focus: #6d4dbf;
+    --radius: 16px;
+    --radius-sm: 10px;
+    --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+    --body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(60rem 30rem at 85% -10%, #e6defb 0%, transparent 60%),
+      radial-gradient(50rem 26rem at -10% 10%, #d9f2e6 0%, transparent 55%),
+      var(--paper);
+    color: var(--ink);
+    font: 400 1rem/1.55 var(--body);
+  }
+  main { flex: 1; max-width: 52rem; margin: 0 auto; padding: 3rem 1.25rem 3rem; width: 100%; }
+  h1 {
+    font: 700 clamp(2rem, 6vw, 3.25rem)/1.08 var(--display);
+    letter-spacing: -0.01em;
+    margin: 0 0 0.75rem;
+  }
+  .lede { max-width: 38rem; color: var(--muted); margin: 0 0 2rem; }
+  [hidden] { display: none !important; }
+
+  /* Drop area */
+  .drop {
+    position: relative;
+    display: block;
+    padding: 3.25rem 1.5rem;
+    background: var(--panel);
+    border: 2px dashed #d7c9f2;
+    border-radius: var(--radius);
+    text-align: center;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .drop::before {
+    content: "";
+    display: block;
+    width: 3.25rem; height: 3.25rem;
+    margin: 0 auto 1rem;
+    border-radius: 50%;
+    background: linear-gradient(155deg, var(--lavender), #a9d9c6 130%);
+  }
+  .drop.over { background: #f2ecfc; border-color: var(--lavender-deep); }
+  .drop:focus-within { outline: 3px solid var(--focus); outline-offset: 4px; }
+  .drop input {
+    position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+  }
+  .drop strong { display: block; font: 600 1.35rem/1.3 var(--display); margin-bottom: 0.35rem; }
+  .drop span.hint { color: var(--muted); font-size: 0.95rem; }
+
+  .fine { color: var(--muted); font-size: 0.875rem; margin-top: 1rem; max-width: 40rem; }
+
+  /* Progress */
+  .status { margin-top: 2rem; }
+  .status p { margin: 0 0 0.6rem; font-weight: 500; }
+  .bar { height: 10px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--lavender-deep), #7fc9a6); transition: width 0.3s ease; }
+
+  /* Result */
+  .verdict {
+    font: 700 clamp(2.1rem, 7vw, 3.5rem)/1.05 var(--display);
+    letter-spacing: -0.01em;
+    margin: 0 0 0.6rem;
+    display: inline-block;
+    padding: 0.15em 0.05em;
+  }
+  .verdict.synthetic { color: var(--coral-ink); }
+  .verdict.authentic { color: var(--mint-ink); }
+  .verdict.inconclusive { color: var(--amber-ink); }
+  .summary { margin: 0 0 2rem; max-width: 40rem; }
+
+  h2 { font: 600 1.15rem/1.3 var(--display); margin: 2.25rem 0 0.25rem; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.9rem; }
+
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1rem 0.5rem; }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.8rem; padding-top: 0.35rem; }
+  .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-top: 0.7rem; }
+  .legend i { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 3px; margin-right: 0.35rem; vertical-align: -1px; }
+
+  .split { display: grid; gap: 2rem; }
+  @media (min-width: 42rem) { .split { grid-template-columns: 1fr 1fr; align-items: start; } }
+  .heat {
+    width: 100%; height: auto; display: block;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    image-rendering: auto;
+  }
+
+  dl { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.35rem 1.1rem; }
+  .metric { display: flex; justify-content: space-between; gap: 1rem; padding: 0.65rem 0; border-bottom: 1px solid var(--line); }
+  .metric:last-child { border-bottom: none; }
+  .metric dt { color: var(--muted); }
+  .metric dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 2.25rem; }
+  .btn {
+    font: 600 1rem var(--body);
+    padding: 0.75rem 1.35rem;
+    border: none;
+    border-radius: 999px;
+    background: var(--lavender-deep);
+    color: #fff;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: filter 0.15s ease, transform 0.15s ease;
+  }
+  .btn.ghost { background: var(--panel); color: var(--ink); border: 1.5px solid var(--line); }
+  .btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+  .btn:hover { filter: brightness(1.06); transform: translateY(-1px); }
+  .btn.ghost:hover { background: #f2ecfc; filter: none; }
+
+  .error {
+    border: 1px solid #f3c9d1;
+    background: #fdf1f3;
+    border-radius: var(--radius-sm);
+    padding: 0.9rem 1.1rem;
+    margin-top: 1.5rem;
+  }
+  .error p { margin: 0 0 0.4rem; font-weight: 600; color: var(--coral-ink); }
+  .error span { color: var(--muted); }
+
+  footer {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+    padding: 1.5rem 1.25rem 2rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) { .bar > div, .btn { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Check a video for face manipulation</h1>
+  <p class="lede">Upload a clip with a person's face in it. The model scores frames from the video and shows when it sees signs of manipulation.</p>
+
+  <section id="upload">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm">
+      <strong>Drop a video here or choose a file</strong>
+      <span class="hint">MP4, MOV, AVI, MKV or WebM. Up to 200 MB and 2 minutes.</span>
+    </label>
+    <p class="fine">Your video is deleted from the server as soon as the analysis finishes. Results stay available for one hour.</p>
+    <div class="error" id="error" role="alert" hidden><p id="error-title"></p><span id="error-hint"></span></div>
+  </section>
+
+  <section id="status" class="status" hidden aria-live="polite">
+    <p id="status-text">Uploading</p>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar-wrap"><div id="bar"></div></div>
+  </section>
+
+  <section id="result" hidden>
+    <p class="verdict" id="verdict"></p>
+    <p class="summary" id="summary"></p>
+
+    <h2>Fake score over time</h2>
+    <p class="sub">Each bar is one analyzed frame. Bars above the dashed line are scored more likely fake than real.</p>
+    <div class="chart">
+      <div id="timeline"></div>
+      <div class="axis"><span>0:00</span><span id="axis-end"></span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--mint-ink)"></i>Looks real</span>
+      <span><i style="background:var(--coral-ink)"></i>Looks fake</span>
+    </div>
+
+    <div class="split">
+      <div id="heat-wrap">
+        <h2>Where the model looked</h2>
+        <p class="sub">The frame it scored highest, with a heatmap of the areas that influenced the score most (red is strongest).</p>
+        <img class="heat" id="heat" alt="The highest-scoring face on the left and a heatmap overlay of the same face on the right">
+      </div>
+      <div>
+        <h2>Details</h2>
+        <p class="sub">Scores are the model's fake probability, from 0% to 100%.</p>
+        <dl id="metrics"></dl>
+      </div>
+    </div>
+
+    <p class="fine">This is a statistical estimate from one model, not proof. Heavy compression, low light or unusual camera angles can cause wrong results.</p>
+
+    <div class="actions">
+      <a class="btn" id="pdf" href="#">Download PDF report</a>
+      <button class="btn ghost" id="again" type="button">Check another video</button>
+    </div>
+  </section>
+</main>
+
+<footer>Built by Aditi Verma, Pranav Pillai and Shreya Thapa</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const drop = $("drop"), fileInput = $("file");
+  const sections = { upload: $("upload"), status: $("status"), result: $("result") };
+
+  const show = (name) => Object.entries(sections).forEach(([k, el]) => (el.hidden = k !== name));
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const pct = (v) => `${(v * 100).toFixed(1)}%`;
+
+  function showError(title, hint) {
+    show("upload");
+    $("error-title").textContent = title;
+    $("error-hint").textContent = hint || "";
+    $("error").hidden = false;
+  }
+
+  function setProgress(label, fraction) {
+    $("status-text").textContent = label;
+    const p = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
+    $("bar").style.width = p + "%";
+    $("bar-wrap").setAttribute("aria-valuenow", p);
+  }
+
+  // ---- drag and drop
+  ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) start(e.dataTransfer.files[0]); });
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) start(fileInput.files[0]); });
+  $("again").addEventListener("click", () => { fileInput.value = ""; $("error").hidden = true; show("upload"); });
+
+  // ---- upload, then poll
+  function start(file) {
+    $("error").hidden = true;
+    show("status");
+    setProgress("Uploading video", 0);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/analyze");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) setProgress(`Uploading video (${Math.round((e.loaded / e.total) * 100)}%)`, e.loaded / e.total); };
+    xhr.onerror = () => showError("Couldn't reach the server", "Check your connection and try again.");
+    xhr.onload = () => {
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch (_) {}
+      if (xhr.status !== 202) return showError("Upload failed", body.detail || "Try a different file.");
+      setProgress("Waiting for the analyzer", 0);
+      poll(body.job_id);
+    };
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  }
+
+  async function poll(jobId) {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      const job = await res.json();
+      if (!res.ok) return showError("Lost track of this analysis", job.detail);
+      if (job.status === "error") return showError("This video couldn't be analyzed", job.error);
+      if (job.status === "done") return render(jobId, job.result);
+      setProgress(job.status === "queued" ? "Waiting for the analyzer" : `Analyzing frames (${Math.round(job.progress * 100)}%)`, job.progress);
+    } catch (_) {
+      /* transient network error: keep polling */
+    }
+    setTimeout(() => poll(jobId), 1000);
+  }
+
+  // ---- render
+  const VERDICTS = {
+    synthetic: "Likely synthetic",
+    authentic: "Likely authentic",
+    inconclusive: "Inconclusive",
+  };
+
+  function summaryFor(r) {
+    if (r.verdict === "inconclusive") return r.reason;
+    const flagged = Math.round(r.spike_ratio * 100);
+    if (r.verdict === "synthetic")
+      return `The model scored ${flagged}% of the ${r.faces_evaluated} analyzed frames as more likely fake than real. The strongest single frame was at ${mmss(r.peak_time)}.`;
+    return `The model scored only ${flagged}% of the ${r.faces_evaluated} analyzed frames as more likely fake than real, which isn't enough to flag this video.`;
+  }
+
+  function drawTimeline(points, duration) {
+    const W = 600, H = 120, n = points.length;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `Fake score for each of ${n} analyzed frames across the video`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.style.height = "140px";
+
+    const slot = W / Math.max(n, 1);
+    const barW = Math.max(1, slot * 0.8);
+    points.forEach(([t, p], i) => {
+      const h = Math.max(1, p * H);
+      const rect = document.createElementNS(NS, "rect");
+      rect.setAttribute("x", (i * slot).toFixed(2));
+      rect.setAttribute("y", (H - h).toFixed(2));
+      rect.setAttribute("width", barW.toFixed(2));
+      rect.setAttribute("height", h.toFixed(2));
+      rect.setAttribute("rx", Math.min(2, barW / 2).toFixed(2));
+      rect.setAttribute("fill", p > 0.5 ? "var(--coral-ink)" : "var(--mint-ink)");
+      const title = document.createElementNS(NS, "title");
+      title.textContent = `${mmss(t)}: ${pct(p)} fake`;
+      rect.appendChild(title);
+      svg.appendChild(rect);
+    });
+
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", 0); line.setAttribute("x2", W);
+    line.setAttribute("y1", H / 2); line.setAttribute("y2", H / 2);
+    line.setAttribute("stroke", "var(--ink)");
+    line.setAttribute("stroke-width", "1.5");
+    line.setAttribute("stroke-dasharray", "6 4");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(line);
+
+    $("timeline").replaceChildren(svg);
+    $("axis-end").textContent = mmss(duration);
+  }
+
+  function render(jobId, r) {
+    const v = $("verdict");
+    v.textContent = VERDICTS[r.verdict];
+    v.className = "verdict " + r.verdict;
+    $("summary").textContent = summaryFor(r);
+
+    drawTimeline(r.timeline, r.duration);
+
+    const hasHeat = r.faces_evaluated > 0;
+    $("heat-wrap").hidden = !hasHeat;
+    if (hasHeat) $("heat").src = `/api/jobs/${jobId}/gradcam.png`;
+
+    const rows = [
+      ["Combined score", pct(r.wci)],
+      ["Average frame score", pct(r.avg)],
+      ["Worst 1-second stretch", pct(r.max_burst)],
+      ["Highest single frame", pct(r.peak)],
+      ["Faces analyzed", String(r.faces_evaluated)],
+      ["Frames with no usable face", String(r.frames_no_face + r.frames_blurry)],
+      ["Video length", mmss(r.duration)],
+    ];
+    $("metrics").replaceChildren(...rows.map(([k, val]) => {
+      const row = document.createElement("div"); row.className = "metric";
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = val;
+      row.append(dt, dd);
+      return row;
+    }));
+
+    $("pdf").href = `/api/jobs/${jobId}/report.pdf`;
+    show("result");
+    v.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+})();
+</script>
+</body>
+</html>
