@@ -99,8 +99,14 @@ def run_session(args):
         # ReportLab imports for generating PDF diagnostic reports
         from reportlab.lib.pagesizes import letter
         from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, KeepTogether
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        if __package__:
+            from .reporting import read_timeline, explain_verdict, build_timeline_drawing, HIGHLIGHT_RULE
+        else:
+            from reporting import read_timeline, explain_verdict, build_timeline_drawing, HIGHLIGHT_RULE
+
+
 
         # -----------------------------------------------------------------------------
         # 1. DIRECTORY & LOGGING SETUP
@@ -149,7 +155,7 @@ def run_session(args):
                 self.target_layer = target_layer
                 self.gradients = None
                 self.activations = None
-        
+
                 self.target_layer.register_forward_hook(self.save_activation)
                 self.target_layer.register_full_backward_hook(self.save_gradient)
 
@@ -215,26 +221,26 @@ def run_session(args):
         def preprocess_5ch(face_bgr):
             face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
-    
+
             coeffs2 = pywt.dwt2(gray, 'haar')
             _, (LH, HL, HH) = coeffs2
             wavelet_feat = np.sqrt(LH**2 + HL**2 + HH**2)
             wavelet_resized = cv2.resize(wavelet_feat, (200, 200))
             wavelet_norm = cv2.normalize(wavelet_resized, None, 0, 1, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-    
+
             f = np.fft.fft2(gray)
             fshift = np.fft.fftshift(f)
             magnitude_spectrum = 20 * np.log(np.abs(fshift) + 1e-5)
             fft_norm = cv2.normalize(magnitude_spectrum, None, 0, 1, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-    
+
             tensor_5ch = np.stack([
-                face_rgb[:, :, 0], 
-                face_rgb[:, :, 1], 
-                face_rgb[:, :, 2], 
-                wavelet_norm, 
+                face_rgb[:, :, 0],
+                face_rgb[:, :, 1],
+                face_rgb[:, :, 2],
+                wavelet_norm,
                 fft_norm
             ], axis=0)
-    
+
             return torch.tensor(tensor_5ch, dtype=torch.float32).unsqueeze(0).to(device)
 
         # -----------------------------------------------------------------------------
@@ -271,7 +277,7 @@ def run_session(args):
 
         banner_text = "DRAG MOUSE OVER VIDEO AREA & PRESS ENTER TO LOCK BOUNDARY"
         cv2.rectangle(opaque_screen, (0, 0), (opaque_screen.shape[1], 40), (0, 0, 0), -1)
-        cv2.putText(opaque_screen, banner_text, (20, 26), 
+        cv2.putText(opaque_screen, banner_text, (20, 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         window_name = "SET BOUNDARY (Press ENTER when done)"
@@ -311,53 +317,53 @@ def run_session(args):
                 frame = camera.get_latest_frame()
                 if frame is None:
                     continue
-            
+
                 f_height, f_width, _ = frame.shape
                 frame[int(f_height * 0.75):f_height, 0:int(f_width * 0.3)] = (0, 0, 0)
-        
+
                 # Run YOLO inference
                 results = face_detector(frame, verbose=False, conf=0.40)
-        
+
                 if len(results) > 0 and len(results[0].boxes) > 0:
                     frames_with_detection += 1
                     box = results[0].boxes[0].xyxy[0].cpu().numpy()
                     px, py, px2, py2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-            
+
                     p_width = px2 - px
                     p_height = py2 - py
-            
+
                     # Pad bounding box by 18% to capture jawline and seam boundaries
                     pad_x = int(p_width * 0.18)
                     pad_y = int(p_height * 0.18)
-            
+
                     full_x = max(0, px - pad_x)
                     full_y = max(0, py - pad_y)
                     full_w = min(f_width - full_x, p_width + (2 * pad_x))
                     full_h = min(f_height - full_y, p_height + (2 * pad_y))
-            
+
                     if full_w > 20 and full_h > 20:
                         face_img = frame[full_y:full_y+full_h, full_x:full_x+full_w]
-                
+
                         if face_img.size > 0:
                             face_resized = cv2.resize(face_img, (200, 200))
-                    
+
                             gray_face = cv2.cvtColor(face_resized, cv2.COLOR_BGR2GRAY)
                             blur_variance = cv2.Laplacian(gray_face, cv2.CV_64F).var()
                             box_aspect_ratio = full_h / (full_w + 1e-5)
-                    
+
                             if blur_variance >= 30.0 and (0.7 <= box_aspect_ratio <= 1.6):
                                 input_tensor = preprocess_5ch(face_resized)
-                        
+
                                 with torch.no_grad():
                                     outputs = model(input_tensor)
                                     probs = torch.softmax(outputs, dim=1)[0]
                                     real_prob = probs[0].item()
                                     raw_fake_prob = probs[1].item()
-                            
+
                                     fake_prob = min(1.0, raw_fake_prob * 1.5)
-                        
+
                                 fake_scores.append(fake_prob)
-                        
+
                                 csv_writer.writerow([
                                     time.strftime('%Y-%m-%d %H:%M:%S'),
                                     f"{time.time() - start_time:.2f}",
@@ -366,7 +372,7 @@ def run_session(args):
                                     f"{real_prob:.4f}",
                                     f"{fake_prob:.4f}"
                                 ])
-                        
+
                                 if fake_prob > highest_fake_score:
                                     highest_fake_score = fake_prob
                                     peak_frame_bgr = face_resized.copy()
@@ -375,7 +381,7 @@ def run_session(args):
                 frame_count += 1
                 elapsed = time.time() - start_time
                 fps = frame_count / elapsed if elapsed > 0 else 0
-        
+
                 print(f"\r🎥 YOLO Face Stream... Elapsed: {elapsed:.1f}s | FPS: {fps:.1f} | Evaluated Faces: {len(fake_scores)}", end="")
 
         except KeyboardInterrupt:
@@ -417,6 +423,14 @@ def run_session(args):
         if len(fake_scores) == 0:
             overall_prediction = "Not enough evidence"
 
+        verdict_explanation = explain_verdict(
+            overall_prediction,
+            {"wci": float(WCI), "average": float(avg_fake_prob),
+             "burst": float(max_burst_avg), "peak": float(highest_fake_score)},
+            {"frames_captured": frame_count, "frames_with_detection": frames_with_detection,
+             "usable_crops_after_filters": len(fake_scores)},
+        )
+
         pdf_path = os.path.join(REPORT_DIR, "report.pdf")
         report_num = session_id
         temp_gradcam_path = os.path.join(REPORT_DIR, f"temp_gradcam_{report_num}.jpg")
@@ -425,13 +439,18 @@ def run_session(args):
             heatmap = grad_cam.generate_heatmap(peak_tensor, class_idx=1)
             heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
             gradcam_overlay = cv2.addWeighted(peak_frame_bgr, 0.6, heatmap_colored, 0.4, 0)
-    
+
             comparison_img = np.hstack([peak_frame_bgr, gradcam_overlay])
             cv2.imwrite(temp_gradcam_path, comparison_img)
         else:
             blank = np.zeros((200, 400, 3), dtype=np.uint8)
             cv2.putText(blank, "No Face Detected", (80, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             cv2.imwrite(temp_gradcam_path, blank)
+
+
+        # Presentation only; the scores and verdict above are unchanged.
+        timeline_data = read_timeline(REPORT_DIR, os.path.basename(csv_log_path))
+        timeline = build_timeline_drawing(timeline_data)
 
         doc = SimpleDocTemplate(pdf_path, pagesize=letter)
         styles = getSampleStyleSheet()
@@ -445,6 +464,11 @@ def run_session(args):
         elements.append(Paragraph(f"Deepfake Detection Diagnostic Report #{report_num} (YOLO Face Tracked)", title_style))
         elements.append(Paragraph(f"<b>Timestamp:</b> {time.strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
         elements.append(Spacer(1, 10))
+
+        elements.append(Paragraph("Verdict Explanation", heading_style))
+        elements.append(Paragraph(verdict_explanation, normal_style))
+        elements.append(Spacer(1, 10))
+
 
         data_metrics = [
             ["Metric", "Value"],
@@ -469,16 +493,35 @@ def run_session(args):
             ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
         ]))
         elements.append(t)
+
+        timeline_elements = []
+        timeline_elements.append(Spacer(1, 12))
+        timeline_elements.append(Paragraph("Score Timeline", heading_style))
+        timeline_elements.append(Paragraph(
+            "Each point reflects a recorded usable detection. "
+            "The adjusted fake score is a model output, not a calibrated "
+            "probability or proof of manipulation.",
+            normal_style
+        ))
+        timeline_elements.append(Spacer(1, 6))
+        timeline_elements.append(timeline)
+        timeline_elements.append(Paragraph(HIGHLIGHT_RULE, normal_style))
+        for warning in timeline_data["warnings"]:
+            timeline_elements.append(Paragraph(warning, normal_style))
+        elements.append(KeepTogether(timeline_elements))
         elements.append(Spacer(1, 15))
 
-        elements.append(Paragraph("Explainable AI (Grad-CAM) Artifact Analysis", heading_style))
-        elements.append(Paragraph("Left: Original Peak Suspicion Face | Right: Grad-CAM Activation Heatmap", normal_style))
-        elements.append(Spacer(1, 8))
+        evidence_elements = []
+        evidence_elements.append(Paragraph("Explainable AI (Grad-CAM) Artifact Analysis", heading_style))
+        evidence_elements.append(Paragraph("Left: Original Peak Suspicion Face | Right: Grad-CAM Activation Heatmap", normal_style))
+        evidence_elements.append(Spacer(1, 8))
 
-        elements.append(RLImage(temp_gradcam_path, width=380, height=190))
-        elements.append(Spacer(1, 12))
+        evidence_elements.append(RLImage(temp_gradcam_path, width=380, height=190))
+        evidence_elements.append(Spacer(1, 12))
 
-        elements.append(Paragraph(f"<b>Technical Note:</b> CSV log generated at {os.path.basename(csv_log_path)} using YOLOv8 face model tracking and WCI equation scoring logic.", normal_style))
+        evidence_elements.append(Paragraph(f"<b>Technical Note:</b> CSV log generated at {os.path.basename(csv_log_path)} using YOLOv8 face model tracking and WCI equation scoring logic.", normal_style))
+
+        elements.append(KeepTogether(evidence_elements))
 
         doc.build(elements)
 
@@ -492,6 +535,7 @@ def run_session(args):
         result = {
             "session_id": session_id,
             "verdict": overall_prediction,
+            "verdict_explanation": verdict_explanation,
             "checkpoint_path": checkpoint_path,
             "checkpoint_sha256": checkpoint_sha256,
             "detector_path": face_detector_path,

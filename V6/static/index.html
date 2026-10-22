@@ -165,6 +165,8 @@
   .how ol { padding-left: 1.3rem; margin-bottom: 0; }
   .btn:disabled { cursor: default; opacity: 0.5; transform: none; filter: none; }
   .error code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 0.65rem; color: var(--ink); }
+  .timeline-scroll { overflow-x: auto; }
+  #timeline-svg { min-width: 560px; }
 </style>
 </head>
 <body>
@@ -200,6 +202,37 @@
   <section id="result" hidden aria-labelledby="verdict">
     <p class="verdict" id="verdict" role="status"></p>
     <p class="summary" id="summary"></p>
+
+    <section id="timeline-section" aria-labelledby="timeline-title" hidden>
+      <h2 id="timeline-title">Fake-score timeline</h2>
+      <p class="sub">
+        CSV scores are already multiplied by 1.5 and capped at 1. They are
+        model outputs, not calibrated probabilities or proof of manipulation.
+      </p>
+      <div class="chart">
+        <div class="timeline-scroll" tabindex="0" aria-label="Score chart; scroll horizontally in a small window">
+        <svg id="timeline-svg"
+             viewBox="0 0 600 240"
+             role="img"
+             aria-label="Adjusted fake score plotted against elapsed time">
+        </svg>
+        </div>
+        <div class="axis">
+          <span id="timeline-start">—</span>
+          <span id="timeline-end">—</span>
+        </div>
+        <div class="legend" id="timeline-legend" hidden>
+          <span><i style="background:var(--lavender-deep)"></i>Recorded crop</span>
+          <span><i style="background:var(--coral-ink)"></i>High score &gt; 0.80</span>
+          <span>Dashed line: 0.80 display cutoff</span>
+        </div>
+        <p class="sub">Highlighting is display-only: an individual high score is not the overall verdict.</p>
+        <p class="sub" id="timeline-message" aria-live="polite">
+          Loading recorded samples…
+        </p>
+      </div>
+    </section>
+
     <div class="split">
       <div>
         <h2>Main scores</h2>
@@ -281,6 +314,100 @@
       return row;
     }));
   }
+
+
+  function resetTimeline(message) {
+    $("timeline-svg").replaceChildren();
+    $("timeline-start").textContent = "—";
+    $("timeline-end").textContent = "—";
+    $("timeline-legend").hidden = true;
+    $("timeline-message").textContent = message;
+  }
+  function plotSamples(samples, limit = 800) {
+    if (samples.length <= limit) return samples;
+    const bucketSize = Math.ceil(samples.length / Math.floor(limit / 4));
+    const visible = [];
+    for (let start = 0; start < samples.length; start += bucketSize) {
+      const end = Math.min(start + bucketSize, samples.length);
+      let low = start, high = start;
+      for (let i = start + 1; i < end; i++) {
+        if (samples[i].adjusted_fake_score < samples[low].adjusted_fake_score) low = i;
+        if (samples[i].adjusted_fake_score > samples[high].adjusted_fake_score) high = i;
+      }
+      for (const i of [...new Set([start, end - 1, low, high])].sort((a, b) => a - b)) visible.push(samples[i]);
+    }
+    return visible;
+  }
+  async function loadTimeline(id) {
+    $("timeline-section").hidden = false;
+    resetTimeline("Loading recorded samples…");
+    try {
+      const data = await request(`/api/live/timeline/${encodeURIComponent(id)}`);
+      if (currentSession !== id) return;
+      const samples = Array.isArray(data.samples) ? data.samples.filter((point) =>
+        point && Number.isFinite(point.elapsed_seconds) && point.elapsed_seconds >= 0 &&
+        Number.isFinite(point.adjusted_fake_score) && point.adjusted_fake_score >= 0 && point.adjusted_fake_score <= 1
+      ).sort((a, b) => a.elapsed_seconds - b.elapsed_seconds) : [];
+      const warnings = Array.isArray(data.warnings) ? data.warnings.filter((v) => typeof v === "string").join(" ") : "";
+      if (!samples.length) {
+        resetTimeline("No usable timed score samples were recorded. " + warnings);
+        return;
+      }
+      const svg = $("timeline-svg"), width = 600, height = 280;
+      const left = 58, right = 22, top = 32, bottom = 60;
+      const plotWidth = width - left - right, plotHeight = height - top - bottom;
+      let maxTime = 1, highCount = 0;
+      for (const sample of samples) {
+        maxTime = Math.max(maxTime, sample.elapsed_seconds);
+        if (sample.adjusted_fake_score > 0.80) highCount++;
+      }
+      const divisor = maxTime >= 120 ? 60 : 1, unit = divisor === 60 ? "min" : "s";
+      const x = (time) => left + time / maxTime * plotWidth;
+      const y = (score) => top + (1 - score) * plotHeight;
+      const ns = "http://www.w3.org/2000/svg";
+      const add = (tag, attrs, text = "") => {
+        const node = document.createElementNS(ns, tag);
+        for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+        node.textContent = text;
+        svg.appendChild(node);
+        return node;
+      };
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      add("text", {x: left, y: 18, fill: "#3c3554", "font-size": 14}, "Boosted fake score (0–1)");
+      for (let tick = 0; tick <= 4; tick++) {
+        const score = tick / 4, elapsed = maxTime * tick / 4;
+        add("line", {x1: left, y1: y(score), x2: width - right, y2: y(score), stroke: "#e8e1f5"});
+        add("text", {x: left - 8, y: y(score) + 4, "text-anchor": "end", fill: "#726791", "font-size": 13}, score.toFixed(2));
+        add("text", {x: x(elapsed), y: height - bottom + 22, "text-anchor": "middle", fill: "#726791", "font-size": 13}, (elapsed / divisor).toFixed(1));
+      }
+      add("line", {x1: left, y1: top, x2: left, y2: height - bottom, stroke: "#726791"});
+      add("line", {x1: left, y1: height - bottom, x2: width - right, y2: height - bottom, stroke: "#726791"});
+      add("text", {x: left + plotWidth / 2, y: height - 9, "text-anchor": "middle", fill: "#3c3554", "font-size": 14}, `Elapsed time (${unit})`);
+      add("line", {x1: left, y1: y(0.80), x2: width - right, y2: y(0.80), stroke: "#a83a50", "stroke-dasharray": "5 4"});
+      const visible = plotSamples(samples);
+      if (visible.length > 1) {
+        const path = visible.map((point, i) => `${i ? "L" : "M"} ${x(point.elapsed_seconds)} ${y(point.adjusted_fake_score)}`).join(" ");
+        add("path", {d: path, fill: "none", stroke: "#6d4dbf", "stroke-width": 2});
+      }
+      for (const point of visible) {
+        const high = point.adjusted_fake_score > 0.80;
+        const dot = add("circle", {cx: x(point.elapsed_seconds), cy: y(point.adjusted_fake_score), r: high ? 3.5 : 2.5, fill: high ? "#a83a50" : "#6d4dbf"});
+        const title = document.createElementNS(ns, "title");
+        title.textContent = `${point.elapsed_seconds.toFixed(2)} s; boosted score ${point.adjusted_fake_score.toFixed(4)}${point.timestamp ? "; recorded " + point.timestamp : ""}`;
+        dot.appendChild(title);
+      }
+      $("timeline-legend").hidden = false;
+      $("timeline-message").textContent = `${samples.length} recorded samples; ${highCount} with boosted score > 0.80. ` +
+        "High moments are not the overall verdict. " +
+        (visible.length < samples.length ? "Plot retains bucket extrema and endpoints for readability. " : "") + warnings;
+      $("timeline-start").textContent = "0 " + unit;
+      $("timeline-end").textContent = (maxTime / divisor).toFixed(1) + " " + unit;
+    } catch (_) {
+      if (currentSession !== id) return;
+      resetTimeline("Timeline data could not be loaded. The verdict and report remain available.");
+    }
+  }
+
   function render(id, result) {
     const verdicts = {
       "AUTHENTIC / REAL": ["REAL", "authentic"],
@@ -295,9 +422,11 @@
     const count = (v) => Number.isInteger(v) && v >= 0 ? String(v) : "—";
     $("verdict").textContent = verdict[0];
     $("verdict").className = "verdict " + verdict[1];
-    $("summary").textContent = noEvidence
-      ? "No usable detections passed the live pipeline’s filters. There is not enough evidence for a verdict."
-      : "The live pipeline finished analyzing your selected screen region. See the PDF for the full diagnostic report.";
+
+    $("summary").textContent = result.verdict_explanation ||
+      (noEvidence
+        ? "No usable detections passed the live pipeline's filters. There is not enough evidence for a verdict."
+        : "The live pipeline finished analyzing your selected screen region. See the PDF for the full diagnostic report.");
     rows($("metrics"), [
       ["Combined score (WCI)", pct(scores.wci)],
       ["Average frame score", pct(scores.average)],
@@ -313,6 +442,7 @@
     $("pdf").hidden = false;
     $("result").hidden = false;
     renderedSession = id;
+    loadTimeline(id);
   }
   async function syncStatus() {
     if (pollPending || actionPending) return;

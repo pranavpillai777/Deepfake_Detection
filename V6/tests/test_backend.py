@@ -236,3 +236,58 @@ def test_page_javascript_behaviour():
     response = subprocess.run([node, str(Path(__file__).with_name('test_page.js'))],
                               capture_output=True, text=True, timeout=20)
     assert response.returncode == 0, response.stdout + response.stderr
+
+
+@pytest.mark.parametrize('csv_text,expected,skipped', [
+    ('Timestamp,Elapsed_Sec,Fake_Prob\n', [], 0),
+    ('Timestamp,Elapsed_Sec,Fake_Prob\nnow,1.25,0.8\n', [(1.25, 0.8)], 0),
+    ('Timestamp,Elapsed_Sec,Fake_Prob\nlater,3,0.9\nearlier,1,0.2\n', [(1, 0.2), (3, 0.9)], 0),
+    ('Elapsed_Sec,Fake_Prob\n-1,0.9\nnan,0.3\n1,inf\n,0.8\n2,1.1\n3,-0.1\n4,0.81\n', [(4, 0.81)], 6),
+    ('Timestamp,Fake_Prob\nnow,0.9\n', [], 0),
+])
+def test_timeline_validates_csv(backend, csv_text, expected, skipped):
+    with backend() as (client, reports):
+        folder = reports / 'csv-review'
+        folder.mkdir()
+        (folder / 'status.json').write_text(json.dumps({'status': 'done'}))
+        (folder / 'inference_log_test.csv').write_text(csv_text, encoding='utf-8-sig')
+        response = client.get('/api/live/timeline/csv-review')
+        assert response.status_code == 200
+        data = response.json()
+        assert [(s['elapsed_seconds'], s['adjusted_fake_score']) for s in data['samples']] == expected
+        assert data['skipped_rows'] == skipped
+        assert data['highlight_threshold'] == 0.80
+        assert [s['suspicious'] for s in data['samples']] == [score > 0.80 for _, score in expected]
+
+
+def test_timeline_unreadable_and_missing_csv(backend):
+    with backend() as (client, reports):
+        folder = reports / 'csv-review'
+        folder.mkdir()
+        (folder / 'status.json').write_text(json.dumps({'status': 'done'}))
+        assert client.get('/api/live/timeline/csv-review').json()['samples'] == []
+        (folder / 'inference_log_test.csv').write_bytes(b'\xff\xfeinvalid')
+        response = client.get('/api/live/timeline/csv-review')
+        assert response.status_code == 200
+        assert response.json()['samples'] == []
+        assert 'could not be read' in response.json()['warnings'][0]
+
+
+def test_timeline_rejects_csv_symlink(backend, tmp_path):
+    with backend() as (client, reports):
+        folder = reports / 'csv-review'
+        folder.mkdir()
+        (folder / 'status.json').write_text(json.dumps({'status': 'done'}))
+        outside = tmp_path / 'outside.csv'
+        outside.write_text('Elapsed_Sec,Fake_Prob\n1,0.99\n')
+        try:
+            (folder / 'inference_log_test.csv').symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f'Windows symlink permission unavailable: {exc}')
+        assert client.get('/api/live/timeline/csv-review').status_code == 400
+
+
+@pytest.mark.parametrize('bad_id', ['bad.id', 'bad_id', 'bad%2Fid', 'bad%5Cid'])
+def test_timeline_rejects_bad_session_id(backend, bad_id):
+    with backend() as (client, _):
+        assert client.get('/api/live/timeline/' + bad_id).status_code == 400

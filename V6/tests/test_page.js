@@ -8,22 +8,24 @@ const html = fs.readFileSync(path.join(__dirname, '../static/index.html'), 'utf8
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 class Element {
-  constructor() { this.hidden = false; this.disabled = false; this.textContent = ''; this.events = {}; }
+  constructor(tagName = '') { this.tagName = tagName; this.hidden = false; this.disabled = false; this.textContent = ''; this.events = {}; this.attributes = {}; }
   addEventListener(name, callback) { this.events[name] = callback; }
   replaceChildren(...children) { this.children = children; }
   append(...children) { this.children = children; }
+  appendChild(child) { (this.children ||= []).push(child); }
+  setAttribute(name, value) { this.attributes[name] = value; }
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate); };
 function page(initial) {
   const elements = new Map();
   const timers = new Map();
   let timerId = 0;
-  const api = {state: initial, offline: false, resultFailure: false, calls: [],
+  const api = {state: initial, offline: false, resultFailure: false, timelineFailure: false, timeline: [], calls: [],
     result: {verdict: 'AUTHENTIC / REAL', scores: {average: .1, peak: .2, burst: .15, wci: .14},
       debug: {frames_captured: 12, frames_with_detection: 8, usable_crops_after_filters: 6}}};
   const get = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   vm.runInNewContext(script, {
-    document: {getElementById: get, createElement: () => new Element()},
+    document: {getElementById: get, createElement: (tag) => new Element(tag), createElementNS: (_, tag) => new Element(tag)},
     AbortController,
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, {callback, delay}); return id; },
     clearTimeout: (id) => timers.delete(id),
@@ -38,6 +40,9 @@ function page(initial) {
       } else if (url.endsWith('/stop')) {
         api.state = {...api.state, status: 'done', process_alive: false, stop_requested: true};
         body = {stop_requested: true};
+      } else if (url.includes('/timeline/')) {
+        body = api.timelineFailure ? {detail: 'Timeline unreadable'} : {samples: api.timeline};
+        ok = !api.timelineFailure;
       } else if (url.includes('/result/')) {
         body = api.resultFailure ? {detail: 'Result file missing'} : api.result;
         ok = !api.resultFailure;
@@ -105,5 +110,47 @@ function page(initial) {
   failed.api.offline = false; failed.api.state = {session_id: null, status: 'idle', process_alive: false};
   await failed.poll();
   assert.equal(failed.get('start').disabled, false);
-  console.log('PASS: live controls, polling, reload recovery, verdicts/counts, dead runner, cancellation, result errors and offline recovery.');
+
+  const chart = page({session_id: 'one-point', status: 'done', process_alive: false});
+  chart.api.timeline = [{elapsed_seconds: 1.25, adjusted_fake_score: 0.8, timestamp: 'recorded time'}];
+  chart.api.result.verdict_explanation = 'Recorded evidence: 6 usable crops. This does not prove authenticity.';
+  await settle();
+  assert.equal(chart.get('summary').textContent, chart.api.result.verdict_explanation);
+  assert(chart.get('timeline-message').textContent.includes('1 recorded samples'));
+  assert.equal(chart.get('timeline-legend').hidden, false);
+  assert.equal(chart.get('timeline-svg').children.filter(n => n.tagName === 'circle').length, 1);
+  assert.equal(chart.get('timeline-svg').children.find(n => n.tagName === 'circle').attributes.fill, '#6d4dbf');
+
+  chart.api.state.session_id = 'multiple';
+  chart.api.timeline = [null, {elapsed_seconds: -1, adjusted_fake_score: .99},
+    {elapsed_seconds: 120, adjusted_fake_score: .81}, {elapsed_seconds: 0, adjusted_fake_score: .80}];
+  await chart.poll();
+  const dots = chart.get('timeline-svg').children.filter(n => n.tagName === 'circle');
+  assert.deepEqual(dots.map(n => n.attributes.fill), ['#6d4dbf', '#a83a50']);
+  assert.equal(chart.get('timeline-end').textContent, '2.0 min');
+  assert(chart.get('timeline-svg').children.some(n => n.textContent === 'Elapsed time (min)'));
+
+  chart.api.state.session_id = 'empty-timeline'; chart.api.timeline = [];
+  await chart.poll();
+  assert.equal(chart.get('timeline-start').textContent, '—');
+  assert.equal(chart.get('timeline-end').textContent, '—');
+  assert.equal(chart.get('timeline-legend').hidden, true);
+  assert.equal(chart.get('timeline-svg').children.length, 0);
+  assert(chart.get('timeline-message').textContent.includes('No usable timed'));
+
+  chart.api.state.session_id = 'failed-timeline'; chart.api.timelineFailure = true;
+  await chart.poll();
+  assert.equal(chart.get('timeline-end').textContent, '—');
+  assert(chart.get('timeline-message').textContent.includes('could not be loaded'));
+  assert.equal(chart.get('pdf').hidden, false, 'A failed chart must not hide the report');
+
+  chart.api.state.session_id = 'large'; chart.api.timelineFailure = false;
+  chart.api.timeline = Array.from({length: 200000}, (_, i) => ({elapsed_seconds: i / 30, adjusted_fake_score: .1}));
+  chart.api.timeline[12345].adjusted_fake_score = .99;
+  await chart.poll();
+  const largeDots = chart.get('timeline-svg').children.filter(n => n.tagName === 'circle');
+  assert(largeDots.length <= 800);
+  assert(largeDots.some(n => n.attributes.fill === '#a83a50'), 'An isolated peak must survive display reduction');
+  assert(chart.get('timeline-message').textContent.includes('200000 recorded samples; 1'));
+  console.log('PASS: live controls, verdicts/explanations, reload/error recovery; empty/one/multiple/200000-point charts, numeric ticks and display-only highlights.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

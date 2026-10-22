@@ -4,7 +4,7 @@ Made by Aditi Verma, Pranav Pillai and Shreya Thapa.
 
 ## What V6 does
 
-V6 lets you control a live screen-analysis session from a local webpage. Click **Start**, select the video area on your screen, play the video, then click **Stop**. The page shows **REAL**, **DEEPFAKE**, or **Not enough evidence**, along with scores, counts and a PDF download.
+V6 lets you control a live screen-analysis session from a local webpage. Click **Start**, select the video area on your screen, play the video, then click **Stop**. The page shows **REAL**, **DEEPFAKE**, or **Not enough evidence**, along with a cautious explanation, scores, counts, a score timeline and a PDF download.
 
 The team reported incorrect verdicts from the old upload webpage and identified `V5/loggin.py` as its preferred pipeline. The code confirms that the old webpage used its own analysis implementation. V6 instead uses `loggin_runner.py`, based on the **committed version of `V5/loggin.py`**, with the requested configurable paths, controls and output files. Its default detector is the team's specified `checkpoints/yolov8n.pt`.
 
@@ -44,6 +44,7 @@ Deepfake_Detection/
   V6/
     app.py
     loggin_runner.py
+    reporting.py                # shared presentation/CSV validation only
     start_local.ps1
     requirements.txt
     static/
@@ -125,6 +126,21 @@ Stop during the countdown cancels before the selection window opens. Stop during
 
 There is no automatic video-end stop or capture-duration timer. Click Stop yourself. Wait for **Done** before closing the backend. Backend shutdown requests Stop but may terminate an unfinished runner after five seconds, so it is not a substitute for completing the report normally.
 
+## Explanations and score timelines
+
+The explanation describes the stored verdict using available frame/detection/usable-crop counts and average, peak, burst and WCI scores. It does not recalculate the verdict. REAL means the existing rules did not flag the sampled region, not proof of authenticity; DEEPFAKE means the rules flagged the samples, not proof of manipulation. Zero usable detections means there is not enough evidence to assess the region.
+
+The webpage and PDF read the existing inference CSV through `reporting.py`. The CSV columns are `Timestamp`, `Elapsed_Sec`, `Box_X`, `Box_Y`, `Box_W`, `Box_H`, `Blur_Variance`, `Real_Prob`, and `Fake_Prob`.
+
+- The chart's horizontal axis uses `Elapsed_Sec` (seconds since capture began), shown in seconds or minutes. Its vertical axis uses the recorded `Fake_Prob` unchanged: the pipeline has already multiplied this score by 1.5 and capped it at 1. It is not a calibrated probability.
+- **Display-only rule:** a recorded boosted score **strictly greater than 0.80** is highlighted in red. Exactly 0.80 is not highlighted. This uses the existing peak cutoff as a visual reference; it does not change WCI, scores, thresholds or the verdict. A high individual moment can occur without the overall session being labelled DEEPFAKE.
+- Purple markers are other recorded crops. The dashed line marks 0.80. Both charts include a legend and numeric time ticks. On a small webpage window, scroll the chart horizontally if needed.
+- Missing wall-clock `Timestamp` values do not prevent plotting when elapsed time exists. Missing, negative or non-finite elapsed times and scores outside 0 to 1 are skipped, not guessed or clamped. Valid records are sorted by elapsed time. Skipped-row counts and warnings are reported.
+- Both readers reject CSV path escapes and file symlinks. Missing files, invalid encoding or malformed CSV produce an empty chart with a warning, without reclassifying the session. A chart with no valid timed records does not necessarily mean there were no usable detections: its time data may be unavailable.
+- Empty timelines show an explicit message and reset their labels; one-point timelines show a marker. Long charts draw at most 800 representative markers, retaining each ordered bucket's endpoints, minimum and maximum, so isolated high scores remain visible. The API still returns all valid records and the recorded scores are unchanged. Lines between points are visual guides, not evidence about rejected or uncaptured frames.
+
+The explanation and timeline are included in newly generated PDFs. Existing PDFs/results are not rewritten automatically. Older results without an explanation retain the page's fallback summary.
+
 ## How the pieces connect
 
 ```text
@@ -149,6 +165,7 @@ The backend remembers a Stop request made before the runner creates its session 
 | `POST /api/live/stop` | Requests Stop for the current session |
 | `GET /api/live/status` | Returns current stage, message, timestamp and process state |
 | `GET /api/live/result/{session_id}` | Returns the result after status is `done` |
+| `GET /api/live/timeline/{session_id}` | Returns valid CSV samples, original wall-clock timestamps when present, skipped-row warnings and highlighting metadata after status is `done` |
 | `GET /api/live/report/{session_id}` | Downloads that session's fixed `report.pdf` |
 
 The runner writes `starting`, `countdown`, `selecting_region`, `capturing`, `analyzing`, then `done`, `error` or `cancelled`. The backend reports `idle` before any session. Status and result JSON files are written under a temporary name and then renamed, so readers do not receive a partly written JSON file.
@@ -170,8 +187,8 @@ V6/reports/<session ID>/
 | --- | --- |
 | `status.json` | Current stage, session ID and UTC timestamp; a message on errors or cancellation |
 | `inference_log_<timestamp>.csv` | One row per usable crop: time, elapsed seconds, crop coordinates, blur measurement, raw real probability and boosted fake score |
-| `report.pdf` | Verdict, duration, frame count, FPS, scores and the peak-crop/Grad-CAM comparison; a placeholder image when no usable crop exists |
-| `result.json` | Verdict, average/peak/burst/WCI scores, report and CSV paths, both model paths and hashes, and debug capture/count information |
+| `report.pdf` | Verdict explanation, score timeline and legend, duration, frame count, FPS, scores and the peak-crop/Grad-CAM comparison; a placeholder image when no usable crop exists |
+| `result.json` | Verdict and its explanation, average/peak/burst/WCI scores, report and CSV paths, both model paths and hashes, and debug capture/count information |
 | `stop` | A control signal; its existence asks the runner to finish, and its contents are not used |
 
 `result.json` is published after the PDF is built. Early cancellation or failure may leave only some files; a completed PDF/result is not promised for failed sessions. A temporary Grad-CAM JPG is normally removed after successful PDF creation.
@@ -209,7 +226,7 @@ node .\V6\tests\test_page.js
 
 Without Node.js, pytest skips that JavaScript check. The backend tests use a **fake runner**, fake model files and a dummy PDF, so they do not start screen capture or measure detection accuracy. Tests cover start/stop, repeated and early Stop, duplicate Start, unexpected process death, invalid session IDs, report-path restrictions, startup checks, page serving, upload removal, local fonts and page behavior.
 
-The latest recorded suite run passed **24 tests**, with one dependency deprecation warning. Browser checks using the fake runner verified Start/Stop, reload recovery, error recovery, displayed scores/counts and the backend-offline message. Earlier checks loaded the actual configured classifier and detector, and compared the preserved processing/scoring code with committed `V5/loggin.py`.
+The pre-follow-up suite passed **24 tests**, with one dependency deprecation warning. Publication-readiness tests now also cover shared CSV validation, invalid timestamps/encoding, symlink rejection, statistical explanations, chart highlighting, large timelines and actual ReportLab PDF assembly using synthetic data. The latest follow-up run recorded **56 passed, 1 skipped, 1 dependency warning**; the skipped test requires Windows permission to create a real symlink. A separate deterministic symlink-rejection check passed. The standalone frontend checks also passed with 200,000 samples. These are reporting/integration checks, not model-accuracy tests. Browser checks using the fake runner verified Start/Stop, reload recovery, error recovery, displayed scores/counts and the backend-offline message. Earlier checks loaded the actual configured classifier and detector, and compared the preserved processing/scoring code with committed `V5/loggin.py`.
 
 **TODO:** Verify the complete V6 webpage-to-real-runner flow on the team's known real and fake videos, including screen selection, Stop, final verdict and Grad-CAM PDF. The recorded integration/browser checks used a fake runner and do not prove real-video accuracy or performance.
 

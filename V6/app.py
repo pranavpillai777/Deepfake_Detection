@@ -1,4 +1,5 @@
 """Local, single-worker API controlling the unchanged desktop runner."""
+
 import json
 import logging
 import os
@@ -15,6 +16,11 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+if __package__:
+    from .reporting import read_timeline, TimelinePathError
+else:
+    from reporting import read_timeline, TimelinePathError
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("deepfake.live")
@@ -85,13 +91,22 @@ def create_app(*, report_dir=None, runner_path=None, checkpoint_path=None,
             raise HTTPException(400, "Session folder must be inside the reports folder.")
         return path
 
+
     def session_file(session_id, name):
         folder = session_dir(session_id)
+
+        # Only allow a simple filename, never a nested or absolute path.
+        if not name or Path(name).name != name or name in {".", ".."}:
+            raise HTTPException(400, "Invalid session filename.")
+
         path = folder / name
         resolved = path.resolve()
+
         if resolved.parent != folder or not resolved.is_relative_to(reports):
             raise HTTPException(400, "Session file must be inside its reports folder.")
+
         return path
+
 
     def read_json(path):
         try:
@@ -241,6 +256,17 @@ def create_app(*, report_dir=None, runner_path=None, checkpoint_path=None,
         if data is None:
             raise HTTPException(404, "The result file is missing.")
         return data
+
+
+    @api.get("/api/live/timeline/{session_id:path}")
+    def timeline(session_id: str):
+        completed(session_id)
+
+        try:
+            data = read_timeline(session_dir(session_id))
+        except TimelinePathError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"session_id": session_id, **data}
 
     @api.get("/api/live/report/{session_id:path}")
     def report(session_id: str):
