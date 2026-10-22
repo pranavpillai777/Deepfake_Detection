@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+numpy
+opencv-python
+PyWavelets
+torch
+torchvision
+dxcam
+ultralytics
+reportlab
+# Backend tests (the fake runner does not load the models).
+pytest
+httpx

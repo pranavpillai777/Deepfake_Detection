@@ -1,0 +1,175 @@
+"""API integration tests using a real child process with no desktop/model access."""
+import json
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from V6.app import create_app
+
+
+FAKE_RUNNER = r'''
+import argparse, json, os, sys, time
+from pathlib import Path
+p = argparse.ArgumentParser()
+for name in ['session-id', 'report-dir', 'checkpoint', 'detector']:
+    p.add_argument('--' + name, required=True)
+args = p.parse_args()
+if MODE == 'no_status':
+    sys.exit(9)
+# Deliberately delay folder creation to exercise Stop immediately after Start.
+time.sleep(0.15)
+folder = Path(args.report_dir) / args.session_id
+folder.mkdir()
+def write(name, data):
+    temp = folder / (name + '.tmp')
+    temp.write_text(json.dumps(data), encoding='utf-8')
+    os.replace(temp, folder / name)
+def status(stage):
+    write('status.json', {'session_id': args.session_id, 'status': stage,
+                        'timestamp': '2026-10-22T00:00:00+00:00'})
+status('capturing')
+if MODE == 'crash':
+    sys.exit(7)
+deadline = time.monotonic() + 15
+while not (folder / 'stop').exists():
+    if time.monotonic() > deadline:
+        sys.exit(8)
+    time.sleep(0.01)
+status('analyzing')
+(folder / 'report.pdf').write_bytes(b'%PDF-1.4\nfake report for API tests\n')
+write('result.json', {'session_id': args.session_id, 'verdict': 'AUTHENTIC / REAL',
+                     'scores': {'wci': 0.1}, 'report_path': str(folder / 'report.pdf'),
+                     'python': sys.executable})
+status('done')
+'''
+
+
+def wait_for(client, predicate):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        response = client.get('/api/live/status')
+        assert response.status_code == 200, response.text
+        state = response.json()
+        if predicate(state):
+            return state
+        time.sleep(0.02)
+    pytest.fail(f'Timed out; last state: {state}')
+
+
+@pytest.fixture
+def backend(tmp_path):
+    @contextmanager
+    def factory(mode='normal'):
+        work = tmp_path / mode
+        work.mkdir()
+        runner = work / 'fake_runner.py'
+        runner.write_text(f'MODE = {mode!r}\n' + FAKE_RUNNER, encoding='utf-8')
+        checkpoint = work / 'classifier.pth'
+        detector = work / 'detector.pt'
+        checkpoint.write_bytes(b'fake checkpoint')
+        detector.write_bytes(b'fake detector')
+        reports = work / 'reports'
+        api = create_app(report_dir=reports, runner_path=runner,
+                         checkpoint_path=checkpoint, detector_path=detector)
+        with TestClient(api, base_url='http://127.0.0.1') as client:
+            yield client, reports
+    return factory
+
+
+def test_start_stop_result_and_report(backend):
+    with backend() as (client, reports):
+        assert client.get('/api/live/status').json()['status'] == 'idle'
+        response = client.post('/api/live/start')
+        assert response.status_code == 202
+        session_id = response.json()['session_id']
+        capturing = wait_for(client, lambda s: s['status'] == 'capturing')
+        assert capturing['process_alive'] and capturing['stage'] == 'capturing'
+        assert client.get(f'/api/live/result/{session_id}').status_code == 409
+        assert client.get(f'/api/live/report/{session_id}').status_code == 409
+        assert client.post('/api/live/stop').status_code == 200
+        assert client.post('/api/live/stop').status_code == 200
+        done = wait_for(client, lambda s: s['status'] == 'done' and not s['process_alive'])
+        assert done['exit_code'] == 0
+        assert (reports / session_id / 'stop').is_file()
+        result = client.get(f'/api/live/result/{session_id}')
+        assert result.status_code == 200
+        assert Path(result.json()['python']).resolve() == Path(sys.executable).resolve()
+        pdf = client.get(f'/api/live/report/{session_id}')
+        assert pdf.status_code == 200 and pdf.content.startswith(b'%PDF')
+        assert pdf.headers['content-type'] == 'application/pdf'
+        assert 'report.pdf' in pdf.headers['content-disposition']
+        assert client.post('/api/live/stop').status_code == 200
+        assert client.post('/api/analyze').status_code == 404
+        assert client.get('/').status_code == 404
+
+
+def test_duplicate_start_and_restart_after_completion(backend):
+    with backend() as (client, _):
+        first = client.post('/api/live/start').json()['session_id']
+        duplicate = client.post('/api/live/start')
+        assert duplicate.status_code == 409
+        assert duplicate.json()['detail'] == 'An analysis is already running'
+        client.post('/api/live/stop')
+        wait_for(client, lambda s: not s['process_alive'])
+        second = client.post('/api/live/start')
+        assert second.status_code == 202 and second.json()['session_id'] != first
+        client.post('/api/live/stop')
+        wait_for(client, lambda s: not s['process_alive'])
+
+
+def test_stop_before_runner_creates_session_folder(backend):
+    with backend() as (client, reports):
+        session_id = client.post('/api/live/start').json()['session_id']
+        assert client.post('/api/live/stop').status_code == 200
+        state = wait_for(client, lambda s: s['status'] == 'done' and not s['process_alive'])
+        assert state['stop_requested']
+        assert (reports / session_id / 'stop').exists()
+
+
+@pytest.mark.parametrize('mode,code', [('crash', 7), ('no_status', 9)])
+def test_process_death_becomes_error(backend, mode, code):
+    with backend(mode) as (client, _):
+        session_id = client.post('/api/live/start').json()['session_id']
+        state = wait_for(client, lambda s: not s['process_alive'])
+        assert state['status'] == 'error' and state['stage'] == 'error'
+        assert state['exit_code'] == code
+        assert 'before writing a final status' in state['message']
+        assert client.get(f'/api/live/result/{session_id}').status_code == 409
+
+
+@pytest.mark.parametrize('bad_id', ['bad.id', 'bad_id', 'bad%2Fid', 'bad%5Cid', '%2E%2E%2Foutside', 'bad%20id', 'bad%3Aid'])
+@pytest.mark.parametrize('endpoint', ['result', 'report'])
+def test_reject_bad_session_ids(backend, bad_id, endpoint):
+    with backend() as (client, _):
+        assert client.get(f'/api/live/{endpoint}/{bad_id}').status_code == 400
+
+
+def test_report_uses_fixed_filename_not_result_path(backend, tmp_path):
+    with backend() as (client, reports):
+        session_id = client.post('/api/live/start').json()['session_id']
+        client.post('/api/live/stop')
+        wait_for(client, lambda s: s['status'] == 'done' and not s['process_alive'])
+        outside = tmp_path / 'outside.pdf'
+        outside.write_bytes(b'secret outside reports')
+        result_path = reports / session_id / 'result.json'
+        data = json.loads(result_path.read_text())
+        data['report_path'] = str(outside)
+        result_path.write_text(json.dumps(data))
+        pdf = client.get(f'/api/live/report/{session_id}')
+        assert pdf.content.startswith(b'%PDF') and b'secret' not in pdf.content
+
+
+@pytest.mark.parametrize('missing', ['checkpoint_path', 'detector_path'])
+def test_startup_checks_models(tmp_path, missing):
+    model = tmp_path / 'exists.pt'
+    model.write_bytes(b'fake weights')
+    options = dict(checkpoint_path=model, detector_path=model,
+                   report_dir=tmp_path / 'reports')
+    options[missing] = tmp_path / 'missing.pt'
+    with pytest.raises(RuntimeError, match='not found'):
+        with TestClient(create_app(**options)):
+            pass
