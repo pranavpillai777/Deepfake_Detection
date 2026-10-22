@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("deepfake.live")
@@ -249,6 +250,11 @@ def create_app(*, report_dir=None, runner_path=None, checkpoint_path=None,
             raise HTTPException(404, "The PDF report is missing.")
         return FileResponse(path, media_type="application/pdf", filename="report.pdf")
 
+    @api.get("/", include_in_schema=False)
+    def index():
+        return FileResponse(PROJECT_ROOT / "V6" / "static" / "index.html", media_type="text/html")
+
+    api.mount("/fonts", StaticFiles(directory=PROJECT_ROOT / "V6" / "static" / "fonts"), name="fonts")
     return api
 
 

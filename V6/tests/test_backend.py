@@ -4,6 +4,10 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from html.parser import HTMLParser
+import re
+import shutil
+import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,7 +31,16 @@ folder.mkdir()
 def write(name, data):
     temp = folder / (name + '.tmp')
     temp.write_text(json.dumps(data), encoding='utf-8')
-    os.replace(temp, folder / name)
+    # Rapid fake-stage transitions can meet a transient Windows file lock.
+    # Retry replacement briefly while keeping publication atomic.
+    for attempt in range(20):
+        try:
+            os.replace(temp, folder / name)
+            break
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.01)
 def status(stage):
     write('status.json', {'session_id': args.session_id, 'status': stage,
                         'timestamp': '2026-10-22T00:00:00+00:00'})
@@ -104,7 +117,7 @@ def test_start_stop_result_and_report(backend):
         assert 'report.pdf' in pdf.headers['content-disposition']
         assert client.post('/api/live/stop').status_code == 200
         assert client.post('/api/analyze').status_code == 404
-        assert client.get('/').status_code == 404
+        assert client.get('/').status_code == 200
 
 
 def test_duplicate_start_and_restart_after_completion(backend):
@@ -173,3 +186,53 @@ def test_startup_checks_models(tmp_path, missing):
     with pytest.raises(RuntimeError, match='not found'):
         with TestClient(create_app(**options)):
             pass
+
+
+class PageElements(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.elements = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+
+def test_live_page_has_controls_without_uploads_or_external_resources(backend):
+    with backend() as (client, _):
+        response = client.get('/')
+        assert response.status_code == 200
+        assert response.headers['content-type'].startswith('text/html')
+        html = response.text
+        page = PageElements()
+        page.feed(html)
+        buttons = {attrs.get('id') for tag, attrs in page.elements if tag == 'button'}
+        assert {'start', 'stop'} <= buttons
+        assert not any(tag == 'input' and attrs.get('type') == 'file' for tag, attrs in page.elements)
+        assert not any(attrs.get('id') in {'upload', 'drop', 'file'} for _, attrs in page.elements)
+        assert 'Upload a clip' not in html and 'screen-recording' not in html
+        assert 'Made by Aditi Verma, Pranav Pillai and Shreya Thapa' in html
+        assert '<title>Real-Time Deepfake Detection &amp; Diagnostic Reporting System</title>' in html
+        assert 'Backend not running' in html and 'start_local.ps1' in html
+        assert all('http' not in attrs.get('src', '') + attrs.get('href', '')
+                   for _, attrs in page.elements)
+        css = client.get('/fonts/fonts.css')
+        assert css.status_code == 200 and 'https://' not in css.text
+        for font in re.findall(r'url\(([^)]+)\)', css.text):
+            font_response = client.get('/fonts/' + font)
+            assert font_response.status_code == 200 and font_response.content
+        # The same controls remain available on reload during a fake session.
+        session_id = client.post('/api/live/start').json()['session_id']
+        wait_for(client, lambda s: s['status'] == 'capturing')
+        assert client.get('/').status_code == 200
+        assert client.get('/api/live/status').json()['session_id'] == session_id
+        client.post('/api/live/stop')
+        wait_for(client, lambda s: not s['process_alive'])
+
+
+def test_page_javascript_behaviour():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node is needed for the dependency-free page-script checks.')
+    response = subprocess.run([node, str(Path(__file__).with_name('test_page.js'))],
+                              capture_output=True, text=True, timeout=20)
+    assert response.returncode == 0, response.stdout + response.stderr

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Real-Time Deepfake Detection &amp; Diagnostic Reporting System</title>
+<link rel="stylesheet" href="/fonts/fonts.css">
+<style>
+  :root {
+    /* pastel palette */
+    --paper: #f8f4fb;
+    --panel: #ffffff;
+    --ink: #3c3554;
+    --muted: #726791;
+    --line: #e8e1f5;
+
+    --lavender: #cdbdf2;
+    --lavender-deep: #6d4dbf;
+    --mint: #bfe8d4;
+    --mint-ink: #1c6b4d;
+    --coral: #f7c6cd;
+    --coral-ink: #a83a50;
+    --amber: #f6ddb0;
+    --amber-ink: #96631a;
+
+    --focus: #6d4dbf;
+    --radius: 16px;
+    --radius-sm: 10px;
+    --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+    --body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(60rem 30rem at 85% -10%, #e6defb 0%, transparent 60%),
+      radial-gradient(50rem 26rem at -10% 10%, #d9f2e6 0%, transparent 55%),
+      var(--paper);
+    color: var(--ink);
+    font: 400 1rem/1.55 var(--body);
+  }
+  main { flex: 1; max-width: 52rem; margin: 0 auto; padding: 3rem 1.25rem 3rem; width: 100%; }
+  h1 {
+    font: 700 clamp(2rem, 6vw, 3.25rem)/1.08 var(--display);
+    letter-spacing: -0.01em;
+    margin: 0 0 0.75rem;
+  }
+  .lede { max-width: 38rem; color: var(--muted); margin: 0 0 2rem; }
+  [hidden] { display: none !important; }
+
+  /* Drop area */
+  .drop {
+    position: relative;
+    display: block;
+    padding: 3.25rem 1.5rem;
+    background: var(--panel);
+    border: 2px dashed #d7c9f2;
+    border-radius: var(--radius);
+    text-align: center;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .drop::before {
+    content: "";
+    display: block;
+    width: 3.25rem; height: 3.25rem;
+    margin: 0 auto 1rem;
+    border-radius: 50%;
+    background: linear-gradient(155deg, var(--lavender), #a9d9c6 130%);
+  }
+  .drop.over { background: #f2ecfc; border-color: var(--lavender-deep); }
+  .drop:focus-within { outline: 3px solid var(--focus); outline-offset: 4px; }
+  .drop input {
+    position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+  }
+  .drop strong { display: block; font: 600 1.35rem/1.3 var(--display); margin-bottom: 0.35rem; }
+  .drop span.hint { color: var(--muted); font-size: 0.95rem; }
+
+  .fine { color: var(--muted); font-size: 0.875rem; margin-top: 1rem; max-width: 40rem; }
+
+  /* Progress */
+  .status { margin-top: 2rem; }
+  .status p { margin: 0 0 0.6rem; font-weight: 500; }
+  .bar { height: 10px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--lavender-deep), #7fc9a6); transition: width 0.3s ease; }
+
+  /* Result */
+  .verdict {
+    font: 700 clamp(2.1rem, 7vw, 3.5rem)/1.05 var(--display);
+    letter-spacing: -0.01em;
+    margin: 0 0 0.6rem;
+    display: inline-block;
+    padding: 0.15em 0.05em;
+  }
+  .verdict.synthetic { color: var(--coral-ink); }
+  .verdict.authentic { color: var(--mint-ink); }
+  .verdict.inconclusive { color: var(--amber-ink); }
+  .summary { margin: 0 0 2rem; max-width: 40rem; }
+
+  h2 { font: 600 1.15rem/1.3 var(--display); margin: 2.25rem 0 0.25rem; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.9rem; }
+
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1rem 0.5rem; }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.8rem; padding-top: 0.35rem; }
+  .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-top: 0.7rem; }
+  .legend i { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 3px; margin-right: 0.35rem; vertical-align: -1px; }
+
+  .split { display: grid; gap: 2rem; }
+  @media (min-width: 42rem) { .split { grid-template-columns: 1fr 1fr; align-items: start; } }
+  .heat {
+    width: 100%; height: auto; display: block;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    image-rendering: auto;
+  }
+
+  dl { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.35rem 1.1rem; }
+  .metric { display: flex; justify-content: space-between; gap: 1rem; padding: 0.65rem 0; border-bottom: 1px solid var(--line); }
+  .metric:last-child { border-bottom: none; }
+  .metric dt { color: var(--muted); }
+  .metric dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 2.25rem; }
+  .btn {
+    font: 600 1rem var(--body);
+    padding: 0.75rem 1.35rem;
+    border: none;
+    border-radius: 999px;
+    background: var(--lavender-deep);
+    color: #fff;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: filter 0.15s ease, transform 0.15s ease;
+  }
+  .btn.ghost { background: var(--panel); color: var(--ink); border: 1.5px solid var(--line); }
+  .btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+  .btn:hover { filter: brightness(1.06); transform: translateY(-1px); }
+  .btn.ghost:hover { background: #f2ecfc; filter: none; }
+
+  .error {
+    border: 1px solid #f3c9d1;
+    background: #fdf1f3;
+    border-radius: var(--radius-sm);
+    padding: 0.9rem 1.1rem;
+    margin-top: 1.5rem;
+  }
+  .error p { margin: 0 0 0.4rem; font-weight: 600; color: var(--coral-ink); }
+  .error span { color: var(--muted); }
+
+  footer {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+    padding: 1.5rem 1.25rem 2rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) { .bar > div, .btn { transition: none; } }
+  .how h2 { margin-top: 0; }
+  .how ol { padding-left: 1.3rem; margin-bottom: 0; }
+  .btn:disabled { cursor: default; opacity: 0.5; transform: none; filter: none; }
+  .error code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 0.65rem; color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Real-Time Deepfake Detection &amp; Diagnostic Reporting System</h1>
+  <p class="lede">Analyze a video playing on this laptop and download a diagnostic report.</p>
+
+  <section class="chart how" aria-labelledby="how-title">
+    <h2 id="how-title">How to use</h2>
+    <p class="sub">Put the video on one side of your screen and this page in a small, separate window on the other side. Keep this page outside the area you select, so clicking Stop does not cover your video.</p>
+    <ol>
+      <li>Click Start and switch to your video during the countdown.</li>
+      <li>In the selection window, drag a box around the face and press Enter.</li>
+      <li>Play the video. Keep its window in the same place.</li>
+      <li>Return here and click Stop. Wait for the verdict and report.</li>
+    </ol>
+  </section>
+
+  <div class="actions">
+    <button class="btn" id="start" type="button" disabled>Start</button>
+    <button class="btn ghost" id="stop" type="button" disabled>Stop</button>
+  </div>
+  <section id="status" class="status" aria-live="polite" aria-atomic="true">
+    <p id="status-text">Connecting to the backend…</p>
+  </section>
+  <div class="error" id="error" role="alert" hidden>
+    <p id="error-title"></p>
+    <span id="error-hint"></span>
+    <code id="start-command" hidden>cd C:\Users\somiv\Desktop\PROJECT\Deepfake_Detection
+.\V6\start_local.ps1 -Python ".\V6\reports\backend-test-env\Scripts\python.exe"</code>
+  </div>
+
+  <section id="result" hidden aria-labelledby="verdict">
+    <p class="verdict" id="verdict" role="status"></p>
+    <p class="summary" id="summary"></p>
+    <div class="split">
+      <div>
+        <h2>Main scores</h2>
+        <p class="sub">Scores from the live pipeline, including its fake-score boost.</p>
+        <dl id="metrics"></dl>
+      </div>
+      <div>
+        <h2>Face and frame counts</h2>
+        <p class="sub">How many frames reached each step of the live analysis.</p>
+        <dl id="counts"></dl>
+      </div>
+    </div>
+    <p class="fine">This is a statistical estimate from one model, not proof. Heavy compression, low light or unusual camera angles can cause wrong results.</p>
+    <div class="actions">
+      <a class="btn" id="pdf" download="report.pdf" hidden>Download report</a>
+    </div>
+  </section>
+</main>
+<footer>Made by Aditi Verma, Pranav Pillai and Shreya Thapa</footer>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const ACTIVE = new Set(["starting", "countdown", "selecting_region", "capturing", "analyzing"]);
+  const STAGES = {
+    idle: "Ready. Click Start to begin.",
+    starting: "Starting the live analysis…",
+    countdown: "Countdown — switch to your video now.",
+    selecting_region: "Selecting region — drag a box around the face and press Enter.",
+    capturing: "Capturing — play your video, then click Stop when finished.",
+    analyzing: "Analyzing — capture has stopped. Building your report…",
+    done: "Done — your result and report are ready.",
+    error: "Analysis failed.",
+    cancelled: "Analysis cancelled. Click Start to try again."
+  };
+  let connected = false, running = false, actionPending = false, pollPending = false;
+  let currentSession = null, renderedSession = null, resultFailedSession = null;
+  let stopRequested = false, revision = 0;
+
+  class ApiError extends Error {}
+  function buttons() {
+    $("start").disabled = !connected || running || actionPending;
+    $("stop").disabled = !connected || !running || actionPending;
+  }
+  function alertMessage(title, hint = "", offline = false) {
+    $("error-title").textContent = title;
+    $("error-hint").textContent = hint;
+    $("start-command").hidden = !offline;
+    $("error").hidden = false;
+  }
+  function failure(error) {
+    if (error instanceof ApiError) {
+      alertMessage("Backend error", error.message);
+      $("status-text").textContent = "Could not complete the request. " + error.message;
+    } else {
+      connected = false;
+      $("status-text").textContent = "Backend not running";
+      alertMessage("Backend not running", "Run this command in PowerShell, keep the terminal open, then wait for this page to reconnect.", true);
+    }
+    buttons();
+  }
+  async function request(url, method = "GET") {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(url, {method, signal: controller.signal, cache: "no-store"});
+      let body;
+      try { body = await response.json(); }
+      catch (_) { throw new ApiError("The backend returned an unreadable response."); }
+      if (!response.ok) throw new ApiError(typeof body.detail === "string" ? body.detail : `Request failed (${response.status}).`);
+      return body;
+    } finally { clearTimeout(timer); }
+  }
+  function rows(element, entries) {
+    element.replaceChildren(...entries.map(([label, value]) => {
+      const row = document.createElement("div"); row.className = "metric";
+      const dt = document.createElement("dt"); dt.textContent = label;
+      const dd = document.createElement("dd"); dd.textContent = value;
+      row.append(dt, dd);
+      return row;
+    }));
+  }
+  function render(id, result) {
+    const verdicts = {
+      "AUTHENTIC / REAL": ["REAL", "authentic"],
+      "SYNTHETIC / DEEPFAKE": ["DEEPFAKE", "synthetic"],
+      "Not enough evidence": ["Not enough evidence", "inconclusive"]
+    };
+    const verdict = verdicts[result.verdict];
+    if (!verdict) throw new ApiError("The result has an unknown verdict. Check the backend terminal.");
+    const debug = result.debug || {}, scores = result.scores || {};
+    const noEvidence = verdict[1] === "inconclusive";
+    const pct = (v) => !noEvidence && Number.isFinite(v) && v >= 0 && v <= 1 ? `${(v * 100).toFixed(1)}%` : "—";
+    const count = (v) => Number.isInteger(v) && v >= 0 ? String(v) : "—";
+    $("verdict").textContent = verdict[0];
+    $("verdict").className = "verdict " + verdict[1];
+    $("summary").textContent = noEvidence
+      ? "No usable detections passed the live pipeline’s filters. There is not enough evidence for a verdict."
+      : "The live pipeline finished analyzing your selected screen region. See the PDF for the full diagnostic report.";
+    rows($("metrics"), [
+      ["Combined score (WCI)", pct(scores.wci)],
+      ["Average frame score", pct(scores.average)],
+      ["Peak burst score", pct(scores.burst)],
+      ["Highest frame score", pct(scores.peak)]
+    ]);
+    rows($("counts"), [
+      ["Frames captured", count(debug.frames_captured)],
+      ["Frames with a detection", count(debug.frames_with_detection)],
+      ["Usable crops after filters", count(debug.usable_crops_after_filters)]
+    ]);
+    $("pdf").href = `/api/live/report/${encodeURIComponent(id)}`;
+    $("pdf").hidden = false;
+    $("result").hidden = false;
+    renderedSession = id;
+  }
+  async function syncStatus() {
+    if (pollPending || actionPending) return;
+    pollPending = true;
+    const seenRevision = revision;
+    try {
+      const state = await request("/api/live/status");
+      if (seenRevision !== revision) return;
+      connected = true;
+      let stage = state.stage || state.status;
+      if (!(stage in STAGES)) throw new ApiError("The backend reported an unknown stage.");
+      if (ACTIVE.has(stage) && state.process_alive === false) {
+        stage = "error";
+        state.message = state.message || "The runner stopped unexpectedly. Click Start to try again.";
+      }
+      if (currentSession !== state.session_id) {
+        currentSession = state.session_id;
+        renderedSession = null; resultFailedSession = null; stopRequested = false;
+        $("result").hidden = true; $("pdf").hidden = true;
+      }
+      running = ACTIVE.has(stage);
+      stopRequested = stopRequested || Boolean(state.stop_requested);
+      $("error").hidden = true;
+      $("status-text").textContent = STAGES[stage];
+      if (stopRequested && stage === "capturing") $("status-text").textContent = "Stop requested — finishing the current frame, then building your report…";
+      if (stopRequested && stage === "selecting_region") $("status-text").textContent = "Stop requested — finish selecting the region and press Enter to continue stopping.";
+      if (stage === "error" || stage === "cancelled") {
+        $("result").hidden = true; $("pdf").hidden = true;
+        alertMessage(stage === "error" ? "Analysis failed" : "Analysis cancelled", state.message || STAGES[stage]);
+      }
+      buttons();
+      if (stage === "done" && currentSession && renderedSession !== currentSession && resultFailedSession !== currentSession) {
+        try {
+          const id = currentSession;
+          const result = await request(`/api/live/result/${encodeURIComponent(id)}`);
+          if (seenRevision === revision && currentSession === id) render(id, result);
+        } catch (error) {
+          if (seenRevision !== revision) return;
+          resultFailedSession = currentSession;
+          failure(error);
+          if (error instanceof ApiError) $("status-text").textContent = "Analysis finished, but the result could not be loaded. Reload this page to retry.";
+        }
+      } else if (stage === "done" && resultFailedSession === currentSession) {
+        $("status-text").textContent = "Result unavailable. Reload this page to retry, or click Start for a new analysis.";
+        alertMessage("Could not load the result", "Reload this page to try again.");
+      }
+    } catch (error) {
+      if (seenRevision !== revision) return;
+      if (error instanceof ApiError) running = false;
+      failure(error);
+    } finally { pollPending = false; buttons(); }
+  }
+  async function action(kind) {
+    if (actionPending) return;
+    actionPending = true; revision += 1; buttons();
+    $("error").hidden = true;
+    try {
+      const response = await request(`/api/live/${kind}`, "POST");
+      connected = true;
+      if (kind === "start") {
+        currentSession = response.session_id;
+        renderedSession = null; resultFailedSession = null; stopRequested = false;
+        running = true; $("result").hidden = true; $("pdf").hidden = true;
+        $("status-text").textContent = STAGES.starting;
+      } else {
+        stopRequested = true;
+        $("status-text").textContent = "Stop requested. Waiting for the runner to finish…";
+      }
+    } catch (error) { failure(error); }
+    finally { actionPending = false; buttons(); await syncStatus(); }
+  }
+  $("start").addEventListener("click", () => action("start"));
+  $("stop").addEventListener("click", () => action("stop"));
+  async function poll() {
+    try { await syncStatus(); }
+    finally { setTimeout(poll, 1000); }
+  }
+  poll();
+})();
+</script>
+</body>
+</html>
